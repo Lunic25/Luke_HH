@@ -1,0 +1,13 @@
+kivy
+pyserial
+smbus2
+numpy
+opencv-python
+
+#Install dependencies
+Pillow
+RPi.GPIO; platform_system == "Linux"
+python -m pip install -r requirements.txt
+
+#Run the GUI
+PS C:\Users\Lnich\Downloads\HydroHalo\Python Code> python display_gui.py

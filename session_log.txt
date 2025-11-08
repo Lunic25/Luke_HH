@@ -1,0 +1,6 @@
+2025-11-07 17:23:22 | Level: Medium | Duration: 30 seconds
+2025-11-07 17:23:59 | Level: Medium | Duration: 30 seconds
+2025-11-07 17:27:22 | Level: Low | Duration: 5 seconds
+2025-11-07 17:30:45 | Level: Low | Duration: 10 seconds
+2025-11-07 17:30:59 | Level: Low | Duration: 10 seconds
+2025-11-07 17:40:01 | Level: Low | Duration: 5 seconds
