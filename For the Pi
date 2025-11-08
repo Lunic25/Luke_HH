@@ -48,7 +48,21 @@ else
     # Check that Python script exists before launching
     if [ -f "$PYTHON_SCRIPT" ]; then
         echo "🚀 Launching display GUI..."
+# Wait until the desktop environment (X server) is available
+for i in {1..30}; do
+    if pgrep lxsession >/dev/null || pgrep Xorg >/dev/null || pgrep wayfire >/dev/null; then
+        echo "🖥️ Desktop detected — launching GUI..."
+        export DISPLAY=:0
+        export XAUTHORITY=/home/lnichols-hydrohal/.Xauthority
         nohup "$PYTHON_CMD" "$PYTHON_SCRIPT" >/home/lnichols-hydrohal/display_gui.log 2>&1 &
+        exit 0
+    fi
+    echo "⌛ Waiting for desktop environment ($i/30)..."
+    sleep 5
+done
+
+echo "⚠️ Desktop environment not detected after waiting — skipping GUI launch."
+
         echo "Display GUI launched!"
     else
         echo "⚠️ display_gui.py not found at $PYTHON_SCRIPT"
