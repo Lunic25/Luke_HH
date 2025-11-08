@@ -1,20 +1,48 @@
 #!/bin/bash
-# auto_pull.sh - Automatically update GitHub repo
+# auto_pull.sh - Automatically update GitHub repo on boot with retry logic
 
-REPO_DIR="/home/pi/Luke_HH"
+# Wait for the network to come online
+sleep 30
+
+REPO_DIR="/home/lnichols-hydrohal/Luke_HH"
 BRANCH="main"
+MAX_RETRIES=3
+RETRY_DELAY=15
 
-cd "$REPO_DIR" || exit
+cd "$REPO_DIR" || { echo "Repo not found at $REPO_DIR"; exit 1; }
 
 echo "==============================="
 echo "Auto Git Pull: $(date)"
 echo "==============================="
 
-# Fetch and pull the latest code
-git fetch origin "$BRANCH"
-git reset --hard origin/"$BRANCH"
+attempt=1
+success=0
 
-# Optional: run a startup script after pulling
+while [ $attempt -le $MAX_RETRIES ]; do
+    echo "Attempt $attempt of $MAX_RETRIES..."
+    
+    # Try to reach GitHub first
+    if ping -c 1 github.com &> /dev/null; then
+        git fetch origin "$BRANCH" && git reset --hard origin/"$BRANCH"
+        if [ $? -eq 0 ]; then
+            echo "✅ Pull successful on attempt $attempt"
+            success=1
+            break
+        fi
+    else
+        echo "⚠️ Network not ready (GitHub unreachable)"
+    fi
+
+    echo "Retrying in $RETRY_DELAY seconds..."
+    sleep $RETRY_DELAY
+    ((attempt++))
+done
+
+if [ $success -ne 1 ]; then
+    echo "❌ Failed to pull after $MAX_RETRIES attempts"
+else
+    echo "Pull complete!"
+fi
+
+# Optional: launch your display script automatically
 # python3 "$REPO_DIR/display_gui.py"
-
-echo "Pull complete!"
