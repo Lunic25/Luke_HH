@@ -1,0 +1,20 @@
+#!/bin/bash
+# auto_pull.sh - Automatically update GitHub repo
+
+REPO_DIR="/home/pi/Luke_HH"
+BRANCH="main"
+
+cd "$REPO_DIR" || exit
+
+echo "==============================="
+echo "Auto Git Pull: $(date)"
+echo "==============================="
+
+# Fetch and pull the latest code
+git fetch origin "$BRANCH"
+git reset --hard origin/"$BRANCH"
+
+# Optional: run a startup script after pulling
+# python3 "$REPO_DIR/display_gui.py"
+
+echo "Pull complete!"
