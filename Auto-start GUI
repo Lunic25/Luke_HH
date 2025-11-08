@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Display GUI
+Exec=/usr/bin/python3 /home/lnichols-hydrohal/Luke_HH/display_gui.py
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
