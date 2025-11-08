@@ -1,0 +1,71 @@
+#!/bin/bash
+# auto_pull.sh - Automatically update GitHub repo on boot with retry logic + GUI launch
+
+# Wait for the network to come online
+sleep 30
+
+REPO_DIR="/home/lnichols-hydrohal/Luke_HH"
+BRANCH="main"
+MAX_RETRIES=3
+RETRY_DELAY=15
+PYTHON_SCRIPT="$REPO_DIR/display_gui.py"
+PYTHON_CMD="/usr/bin/python3"
+
+cd "$REPO_DIR" || { echo "Repo not found at $REPO_DIR"; exit 1; }
+
+echo "==============================="
+echo "Auto Git Pull: $(date)"
+echo "==============================="
+
+attempt=1
+success=0
+
+while [ $attempt -le $MAX_RETRIES ]; do
+    echo "Attempt $attempt of $MAX_RETRIES..."
+    
+    # Check that GitHub is reachable
+    if ping -c 1 github.com &> /dev/null; then
+        git fetch origin "$BRANCH" && git reset --hard origin/"$BRANCH"
+        if [ $? -eq 0 ]; then
+            echo "✅ Pull successful on attempt $attempt"
+            success=1
+            break
+        fi
+    else
+        echo "⚠️ Network not ready (GitHub unreachable)"
+    fi
+
+    echo "Retrying in $RETRY_DELAY seconds..."
+    sleep $RETRY_DELAY
+    ((attempt++))
+done
+
+if [ $success -ne 1 ]; then
+    echo "❌ Failed to pull after $MAX_RETRIES attempts"
+else
+    echo "Pull complete!"
+
+    # Check that Python script exists before launching
+    if [ -f "$PYTHON_SCRIPT" ]; then
+        echo "🚀 Launching display GUI..."
+# Wait until the desktop environment (X server) is available
+for i in {1..30}; do
+    if pgrep lxsession >/dev/null || pgrep Xorg >/dev/null || pgrep wayfire >/dev/null; then
+        echo "🖥️ Desktop detected — launching GUI..."
+        export DISPLAY=:0
+        export XAUTHORITY=/home/lnichols-hydrohal/.Xauthority
+        #nohup "$PYTHON_CMD" "$PYTHON_SCRIPT" >/home/lnichols-hydrohal/display_gui.log 2>&1 &
+        exit 0
+    fi
+    echo "⌛ Waiting for desktop environment ($i/30)..."
+    sleep 5
+done
+
+echo "⚠️ Desktop environment not detected after waiting — skipping GUI launch."
+
+        echo "Display GUI launched!"
+    else
+        echo "⚠️ display_gui.py not found at $PYTHON_SCRIPT"
+    fi
+fi
+
