@@ -118,8 +118,10 @@ def select_level(level):
     tk.Label(time_window, text=f"Set duration for {level} resistance:", fg="white", bg="black", font=("Helvetica", 16)).pack(pady=20)
 
     time_options = {"5 seconds": 5, "10 seconds": 10, "12 seconds": 12, "15 seconds": 15}
+# --- Set default dropdown to the first option ---    
     selected_label = tk.StringVar(time_window)
-    selected_label.set("Time")
+    selected_label.set(list(time_options.keys())[0]) #Defaults to 5 seconds
+
     tk.OptionMenu(time_window, selected_label, *time_options.keys()).pack(pady=10)
 
     countdown_label = tk.Label(time_window, text="", fg="#00BFFF", bg="black", font=("Helvetica", 14))
@@ -129,6 +131,8 @@ def select_level(level):
         label = selected_label.get()
         duration = time_options[label]
         countdown_label.config(text=f"{level} resistance engaged for {label}")
+
+        # Start countdown in a background thread        
         threading.Thread(target=start_countdown, args=(duration, countdown_label, level), daemon=True).start()
 
     tk.Button(time_window, text="Confirm", command=confirm_time, bg="#45FFFF", fg="black", font=("Helvetica", 12, "bold")).pack(pady=10)
