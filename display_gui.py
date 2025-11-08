@@ -6,10 +6,10 @@ import threading
 import time
 from datetime import datetime
 
-# Detect Raspberry Pi
+# --- Detect Raspberry Pi ---
 on_pi = "raspberrypi" in platform.uname().node.lower()
 
-# GPIO setup
+# --- GPIO setup ---
 use_gpio = on_pi
 use_sound = True
 if on_pi:
@@ -18,14 +18,37 @@ if on_pi:
     RESISTANCE_PIN = 18
     GPIO.setup(RESISTANCE_PIN, GPIO.OUT)
 
-# GUI setup
+# --- GUI setup ---
 root = tk.Tk()
 root.title("HydroHalo Startup")
-screen_width, screen_height = (800, 480)
-root.geometry(f"{screen_width}x{screen_height}")
 root.configure(bg="black")
 
-# Logo
+# --- Responsive window setup ---
+root.update_idletasks()
+screen_width = root.winfo_screenwidth()
+screen_height = root.winfo_screenheight()
+
+# Scale to 90% of available screen
+window_width = int(screen_width * 0.9)
+window_height = int(screen_height * 0.9)
+x_position = (screen_width - window_width) // 2
+y_position = (screen_height - window_height) // 2
+
+# Apply size and position
+root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
+root.minsize(600, 400)
+
+# Auto fullscreen for small displays
+if screen_width < 1000 or screen_height < 600:
+    root.attributes("-fullscreen", True)
+
+# Handle resize gracefully
+def on_resize(event):
+    root.update_idletasks()
+
+root.bind("<Configure>", on_resize)
+
+# --- Logo Section ---
 logo_path = os.path.join(os.path.dirname(__file__), "hydrohalo_logo.png")
 if os.path.exists(logo_path):
     logo_img = Image.open(logo_path).resize((250, 250))
@@ -36,11 +59,11 @@ if os.path.exists(logo_path):
 else:
     tk.Label(root, text="[Logo Missing]", fg="white", bg="black", font=("Arial", 24)).pack(pady=40)
 
-# Title
+# --- Title & Labels ---
 tk.Label(root, text="HydroHalo", fg="#45FFFF", bg="black", font=("Helvetica", 36, "bold")).pack()
 tk.Label(root, text="Select Resistance Level:", fg="white", bg="black", font=("Helvetica", 18)).pack(pady=20)
 
-# Countdown logic
+# --- Countdown & Logic Functions ---
 def start_countdown(duration_seconds, display_label, level):
     log_session(level, duration_seconds)
     if use_gpio and on_pi:
@@ -85,7 +108,7 @@ def log_session(level, duration_seconds):
         log_file.write(log_entry)
     print("📝 Session logged:", log_entry.strip())
 
-# Resistance selection
+# --- Resistance Level Selection ---
 def select_level(level):
     time_window = tk.Toplevel(root)
     time_window.title(f"{level} Resistance Duration")
@@ -94,13 +117,7 @@ def select_level(level):
 
     tk.Label(time_window, text=f"Set duration for {level} resistance:", fg="white", bg="black", font=("Helvetica", 16)).pack(pady=20)
 
-    time_options = {
-        "5 seconds": 5,
-        "10 seconds": 10,
-        "12 seconds": 12,
-        "15 seconds": 15,
-    }
-
+    time_options = {"5 seconds": 5, "10 seconds": 10, "12 seconds": 12, "15 seconds": 15}
     selected_label = tk.StringVar(time_window)
     selected_label.set("Time")
     tk.OptionMenu(time_window, selected_label, *time_options.keys()).pack(pady=10)
@@ -116,7 +133,7 @@ def select_level(level):
 
     tk.Button(time_window, text="Confirm", command=confirm_time, bg="#45FFFF", fg="black", font=("Helvetica", 12, "bold")).pack(pady=10)
 
-# Session history viewer
+# --- Session History Viewer ---
 def view_session_history():
     history_window = tk.Toplevel(root)
     history_window.title("Session History")
@@ -124,7 +141,6 @@ def view_session_history():
     history_window.configure(bg="black")
 
     tk.Label(history_window, text="HydroHalo Session Log", fg="#45FFFF", bg="black", font=("Helvetica", 18)).pack(pady=10)
-
     text_area = tk.Text(history_window, wrap="word", bg="black", fg="white", font=("Helvetica", 12))
     text_area.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -134,7 +150,7 @@ def view_session_history():
     except FileNotFoundError:
         text_area.insert("1.0", "No session history found.")
 
-# Settings menu
+# --- Settings Menu ---
 def open_settings():
     settings_window = tk.Toplevel(root)
     settings_window.title("Settings")
@@ -158,18 +174,18 @@ def open_settings():
 
     tk.Button(settings_window, text="Save", command=save_settings, bg="#45FFFF", fg="black", font=("Helvetica", 12, "bold")).pack(pady=10)
 
-# Resistance buttons
+# --- Resistance Buttons ---
 levels = ["Low", "Medium", "High", "Custom"]
 for lvl in levels:
     tk.Button(root, text=lvl, command=lambda l=lvl: select_level(l), width=15, height=2, bg="#45FFFF", fg="black", font=("Helvetica", 14, "bold")).pack(pady=5)
 
-# Extra buttons
+# --- Extra Buttons ---
 tk.Button(root, text="View Session History", command=view_session_history, width=20, height=2, bg="#AAAAFF", fg="black", font=("Helvetica", 12, "bold")).pack(pady=10)
 tk.Button(root, text="Settings", command=open_settings, width=20, height=2, bg="#FFD700", fg="black", font=("Helvetica", 12, "bold")).pack(pady=5)
 
-# Run loop
+# --- Run loop ---
 root.mainloop()
 
-# Cleanup GPIO
+# --- Cleanup GPIO on exit ---
 if on_pi:
     GPIO.cleanup()
