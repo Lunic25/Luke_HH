@@ -54,7 +54,7 @@ for i in {1..30}; do
         echo "🖥️ Desktop detected — launching GUI..."
         export DISPLAY=:0
         export XAUTHORITY=/home/lnichols-hydrohal/.Xauthority
-        nohup "$PYTHON_CMD" "$PYTHON_SCRIPT" >/home/lnichols-hydrohal/display_gui.log 2>&1 &
+        #nohup "$PYTHON_CMD" "$PYTHON_SCRIPT" >/home/lnichols-hydrohal/display_gui.log 2>&1 &
         exit 0
     fi
     echo "⌛ Waiting for desktop environment ($i/30)..."
