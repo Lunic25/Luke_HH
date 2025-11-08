@@ -189,3 +189,5 @@ root.mainloop()
 # --- Cleanup GPIO on exit ---
 if on_pi:
     GPIO.cleanup()
+
+#End
