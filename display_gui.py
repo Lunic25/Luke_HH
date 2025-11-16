@@ -117,7 +117,7 @@ def select_level(level):
 
     tk.Label(time_window, text=f"Set duration for {level} resistance:", fg="white", bg="black", font=("Helvetica", 16)).pack(pady=20)
 
-    time_options = {"5 seconds": 5, "10 seconds": 10, "12 seconds": 12, "15 seconds": 15}
+    time_options = {"6 seconds": 6, "10 seconds": 10, "12 seconds": 12, "15 seconds": 15}
 # --- Set default dropdown to the first option ---    
     selected_label = tk.StringVar(time_window)
     selected_label.set(list(time_options.keys())[0]) #Defaults to 5 seconds
