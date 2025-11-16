@@ -1,5 +1,0 @@
-lnichols-hydrohalo@raspberrypi:~ $ python3 ~/Luke_HH/display_gui.py
-Traceback (most recent call last):
-  File "/home/lnichols-hydrohalo/Luke_HH/display_gui.py", line 2, in <module>
-    from PIL import Image, ImageTk
-ImportError: cannot import name 'ImageTk' from 'PIL' (/usr/lib/python3/dist-packages/PIL/__init__.py). Did you mean: 'Image'?
