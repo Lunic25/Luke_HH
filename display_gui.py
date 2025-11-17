@@ -1,631 +1,482 @@
 #!/usr/bin/env python3
 """
-HydroHalo GUI Application - Raspberry Pi Fixed Version
-Fixed Pi-specific issues with countdown threading and window scaling
+HydroHalo GUI v2 (single-file)
+- tkinter-safe (no blocking in main thread)
+- countdown uses root.after()
+- MotorController abstraction (placeholder + serial/VESC hook)
+- Settings persisted to settings.json
+- Session logging to session_log.txt
+- Safe shutdown and thread cleanup
+
+Save as display_gui_v2.py (or replace your display_gui.py)
+Run: python3 display_gui_v2.py
 """
 
-import tkinter as tk
-from tkinter import messagebox, font as tkfont
-from PIL import Image, ImageTk
 import os
-import platform
+import sys
+import json
 import threading
 import time
-from datetime import datetime
-import sys
 import traceback
-import subprocess
+from datetime import datetime
+import platform
+import tkinter as tk
+from tkinter import messagebox
 
-
-def is_raspberry_pi():
-    """Detect if running on Raspberry Pi with multiple methods"""
-    try:
-        # Method 1: Check platform
-        if "raspberrypi" in platform.uname().node.lower():
-            return True
-        
-        # Method 2: Check for Pi-specific files
-        pi_indicators = [
-            '/proc/device-tree/model',
-            '/usr/bin/vcgencmd',
-            '/sys/firmware/devicetree/base/model'
-        ]
-        
-        for indicator in pi_indicators:
-            if os.path.exists(indicator):
-                try:
-                    with open(indicator, 'r') as f:
-                        content = f.read().lower()
-                        if 'raspberry pi' in content:
-                            return True
-                except:
-                    pass
-        
-        return False
-    except:
-        return False
-
-
-on_pi = is_raspberry_pi()
-print(f"🔍 Running on: {'Raspberry Pi' if on_pi else 'PC/Mac'}")
-
-# GPIO setup with better error handling
-use_gpio = on_pi
-use_sound = True
-GPIO = None
-RESISTANCE_PIN = 18
-
-if on_pi:
-    try:
-        import RPi.GPIO as GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RESISTANCE_PIN, GPIO.OUT)
-        GPIO.output(RESISTANCE_PIN, GPIO.LOW)  # Start with resistance OFF
-        print("✅ GPIO initialized successfully")
-    except ImportError:
-        print("⚠️ RPi.GPIO not available")
-        use_gpio = False
-        GPIO = None
-    except Exception as e:
-        print(f"⚠️ GPIO setup failed: {e}")
-        use_gpio = False
-        GPIO = None
-else:
-    print("ℹ️ Not on Raspberry Pi - GPIO disabled")
-
-
-# GUI setup with Pi-specific fixes
-root = tk.Tk()
-root.title("HydroHalo Startup")
-root.configure(bg="black")
-
-# Fix for Pi scaling issues
-if on_pi:
-    # Force proper DPI and scaling on Pi
-    try:
-        root.tk.call('tk', 'scaling', 1.0)
-    except:
-        pass
-
-# Get screen dimensions with fallbacks
+# Optional imports (only used if available)
 try:
-    root.update_idletasks()
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    print(f"📺 Screen detected: {screen_width}x{screen_height}")
-except:
-    # Fallback dimensions for common Pi setups
-    if on_pi:
-        screen_width, screen_height = 800, 480  # Common Pi display
-        print("📺 Using fallback Pi screen size: 800x480")
-    else:
-        screen_width, screen_height = 1920, 1080  # Standard fallback
-        print("📺 Using fallback screen size: 1920x1080")
+    from PIL import Image, ImageTk
+except Exception:
+    Image = ImageTk = None
 
-# Responsive window setup with Pi fixes
-if on_pi:
-    # For Pi, use more conservative sizing
-    if screen_width <= 800:  # Small Pi displays
-        window_width = screen_width
-        window_height = screen_height
-        x_position = 0
-        y_position = 0
-        root.attributes("-fullscreen", True)
-        print("🖥️ Pi small display detected - using fullscreen")
-    else:
-        # Larger Pi displays
-        window_width = int(screen_width * 0.85)
-        window_height = int(screen_height * 0.85)
-        x_position = (screen_width - window_width) // 2
-        y_position = (screen_height - window_height) // 2
-else:
-    # PC/Mac scaling
-    window_width = int(screen_width * 0.9)
-    window_height = int(screen_height * 0.9)
-    x_position = (screen_width - window_width) // 2
-    y_position = (screen_height - window_height) // 2
+# --------- Configuration / Defaults ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(SCRIPT_DIR)  # ensure relative files load from repo dir
 
-# Apply size and position
-root.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
-root.minsize(600, 400)
+SETTINGS_PATH = os.path.join(SCRIPT_DIR, "settings.json")
+LOG_PATH = os.path.join(SCRIPT_DIR, "session_log.txt")
 
-# Global variables for threading
-stop_countdown = False
-active_threads = []
-thread_lock = threading.Lock()
+DEFAULT_SETTINGS = {
+    "use_gpio": False,        # disabled while nothing is wired
+    "use_sound": True,
+    "default_duration": 10,   # seconds (for quick testing)
+    "motor_mode": "placeholder"  # "placeholder" or "vesc_serial"
+}
 
-
-def cleanup_on_exit():
-    """Clean up resources on exit"""
-    global stop_countdown
-    with thread_lock:
-        stop_countdown = True
-    
-    print("🧹 Cleaning up resources...")
-    
-    # Wait for threads to finish
-    for thread in active_threads:
-        if thread.is_alive():
-            thread.join(timeout=1.0)
-    
-    # Cleanup GPIO
-    if use_gpio and GPIO:
-        try:
-            GPIO.output(RESISTANCE_PIN, GPIO.LOW)
-            GPIO.cleanup()
-            print("✅ GPIO cleanup completed")
-        except Exception as e:
-            print(f"⚠️ GPIO cleanup failed: {e}")
-
-
-# Bind cleanup to window close
-root.protocol("WM_DELETE_WINDOW", lambda: (cleanup_on_exit(), root.destroy()))
-
-
-def load_logo():
-    """Load logo with multiple fallback paths and Pi-specific handling"""
+# --------- Utility: detect Raspberry Pi ----------
+def is_raspberry_pi():
     try:
-        logo_paths = [
-            os.path.join(os.path.dirname(__file__), "hydrohalo_logo.png"),
-            "hydrohalo_logo.png",
-            os.path.join(os.getcwd(), "hydrohalo_logo.png"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "hydrohalo_logo.png")
-        ]
-        
-        for logo_path in logo_paths:
-            if os.path.exists(logo_path):
-                # Adjust logo size for Pi
-                logo_size = 150 if on_pi and screen_width <= 800 else 250
-                logo_img = Image.open(logo_path).resize((logo_size, logo_size))
-                logo_photo = ImageTk.PhotoImage(logo_img)
-                logo_label = tk.Label(root, image=logo_photo, bg="black")
-                logo_label.image = logo_photo  # Keep reference
-                logo_label.pack(pady=10 if on_pi else 20)
-                print(f"🖼️ Logo loaded from: {logo_path}")
-                return True
-        
-        # Create text logo if image not found
-        logo_text = "HYDROHALO" if on_pi else "[Logo Missing]"
-        logo_size = 24 if on_pi else 32
-        tk.Label(root, text=logo_text, fg="#45FFFF", bg="black", 
-                font=("Helvetica", logo_size, "bold")).pack(pady=20)
-        print("⚠️ Logo file not found - using text logo")
-        return False
-    except Exception as e:
-        print(f"⚠️ Logo loading failed: {e}")
-        tk.Label(root, text="[Logo Error]", fg="red", bg="black", 
-                font=("Helvetica", 24)).pack(pady=20)
-        return False
-
-
-load_logo()
-
-# Title & Labels with Pi-responsive fonts
-if on_pi and screen_width <= 800:
-    title_font = ("Helvetica", 28, "bold")
-    label_font = ("Helvetica", 14)
-    button_font = ("Helvetica", 12, "bold")
-    small_font = ("Helvetica", 10)
-else:
-    title_font = ("Helvetica", 36, "bold")
-    label_font = ("Helvetica", 18)
-    button_font = ("Helvetica", 14, "bold")
-    small_font = ("Helvetica", 12)
-
-tk.Label(root, text="HydroHalo", fg="#45FFFF", bg="black", 
-        font=title_font).pack()
-tk.Label(root, text="Select Resistance Level:", fg="white", bg="black", 
-        font=label_font).pack(pady=10 if on_pi else 20)
-
-
-def safe_gui_update(widget, **kwargs):
-    """Safely update GUI from any thread with better error handling"""
-    try:
-        if widget and hasattr(widget, 'winfo_exists') and widget.winfo_exists():
-            for key, value in kwargs.items():
-                widget.config(**{key: value})
-            return True
-    except Exception as e:
-        print(f"⚠️ GUI update error: {e}")
-    return False
-
-
-def start_countdown(duration_seconds, display_label, level):
-    """Start countdown timer with improved Pi threading"""
-    global stop_countdown, active_threads
-    
-    try:
-        print(f"⏱️ Starting {level} countdown for {duration_seconds}s")
-        log_session(level, duration_seconds)
-        
-        # Turn on resistance
-        if use_gpio and GPIO:
+        # fast heuristic
+        if sys.platform.startswith("linux"):
             try:
-                GPIO.output(RESISTANCE_PIN, GPIO.HIGH)
-                print(f"🔌 Resistance ON for {level}")
-            except Exception as e:
-                print(f"⚠️ GPIO output failed: {e}")
+                with open("/proc/device-tree/model", "r") as f:
+                    model = f.read().lower()
+                    if "raspberry" in model:
+                        return True
+            except Exception:
+                pass
+        # fallback to uname hostname check
+        return "raspberrypi" in platform.uname().node.lower()
+    except Exception:
+        return False
 
-        # Countdown loop with better thread safety
-        for remaining in range(duration_seconds, 0, -1):
-            # Check stop flag with lock
-            with thread_lock:
-                if stop_countdown:
-                    print("⏹️ Countdown stopped")
-                    break
-            
-            mins, secs = divmod(remaining, 60)
-            time_str = f"{mins:02d}:{secs:02d}"
-            
-            # Use root.after for thread-safe GUI updates
-            root.after(0, lambda t=time_str: safe_gui_update(display_label, text=f"Time remaining: {t}"))
-            
-            # Sleep with interruption check
-            for _ in range(10):  # Check every 0.1 seconds
-                with thread_lock:
-                    if stop_countdown:
+ON_PI = is_raspberry_pi()
+
+# --------- Settings management ----------
+def load_settings():
+    try:
+        if os.path.exists(SETTINGS_PATH):
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # ensure keys
+                for k, v in DEFAULT_SETTINGS.items():
+                    data.setdefault(k, v)
+                return data
+    except Exception as e:
+        print("⚠️ Failed to load settings:", e)
+    return DEFAULT_SETTINGS.copy()
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print("⚠️ Failed to save settings:", e)
+
+# --------- Session logging ----------
+def log_session(level, duration):
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"{ts} | Level:{level} | Duration:{duration}s\n"
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(entry)
+        print("📝", entry.strip())
+    except Exception as e:
+        print("⚠️ Logging error:", e)
+
+# --------- MotorController abstraction ----------
+class MotorController:
+    """
+    Controls motor-based resistance.
+    Modes:
+      - placeholder: no hardware, simulates output (safe for dev)
+      - vesc_serial: outline to send serial commands to a VESC (you'll supply port and protocol)
+    """
+
+    def __init__(self, settings):
+        self.settings = settings
+        self.mode = settings.get("motor_mode", "placeholder")
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+        # placeholder motor state
+        self.current_level = None
+        # serial attributes (if you implement)
+        self.serial_port = None
+        self.serial_baud = 115200
+
+    # Public API
+    def start(self, level):
+        """Start continuous resistance at a given level (Low/Medium/High/custom %)"""
+        with self._lock:
+            self.current_level = level
+            if not self._running:
+                self._running = True
+                self._thread = threading.Thread(target=self._run_loop, daemon=True)
+                self._thread.start()
+        print(f"MotorController: start({level})")
+
+    def stop(self):
+        """Stop resistance"""
+        with self._lock:
+            self._running = False
+        # join briefly for cleanliness
+        if self._thread:
+            self._thread.join(timeout=0.5)
+            self._thread = None
+        # ensure hardware off
+        self._hw_set_off()
+        print("MotorController: stop()")
+
+    def _run_loop(self):
+        """Background loop that issues motor commands at a safe rate"""
+        try:
+            while True:
+                with self._lock:
+                    if not self._running:
                         break
-                time.sleep(0.1)
-            
-            with thread_lock:
-                if stop_countdown:
-                    break
-
-        # Completion handling
-        with thread_lock:
-            if not stop_countdown:
-                root.after(0, lambda: safe_gui_update(display_label, text="✅ Resistance cycle complete!"))
-                root.after(0, lambda: flash_label(display_label))
-                root.after(0, play_sound)
-
-        # Turn off resistance
-        if use_gpio and GPIO:
-            try:
-                GPIO.output(RESISTANCE_PIN, GPIO.LOW)
-                print(f"🔌 Resistance OFF for {level}")
-            except Exception as e:
-                print(f"⚠️ GPIO cleanup failed: {e}")
-                
-    except Exception as e:
-        print(f"⚠️ Countdown error: {e}")
-        root.after(0, lambda: safe_gui_update(display_label, text=f"❌ Error: {str(e)}"))
-    finally:
-        # Clean up thread reference
-        current_thread = threading.current_thread()
-        with thread_lock:
-            if current_thread in active_threads:
-                active_threads.remove(current_thread)
-        print(f"🧵 Countdown thread finished")
-
-
-def flash_label(label, count=6):
-    """Flash label color using after() method with Pi compatibility"""
-    def toggle_color(flash_count):
-        if flash_count <= 0 or not label.winfo_exists():
-            return
-        
-        try:
-            current_color = label.cget("fg")
-            new_color = "red" if current_color == "#00BFFF" else "#00BFFF"
-            label.config(fg=new_color)
-            root.after(500, lambda: toggle_color(flash_count - 1))
+                    level = self.current_level
+                # issue a single-control call (non-blocking, short)
+                self._hw_set_level(level)
+                # sleep a bit but responsive
+                time.sleep(0.25)
         except Exception as e:
-            print(f"⚠️ Flash error: {e}")
-    
-    root.after(0, lambda: toggle_color(count))
+            print("⚠️ MotorController loop error:", e)
+        finally:
+            self._hw_set_off()
 
+    # Hardware-level implementations (edit when wiring)
+    def _hw_set_level(self, level):
+        """Map level string to hardware command. Placeholder prints; implement serial or GPIO here."""
+        # Example mapping (you can change to percentages or currents)
+        if self.mode == "placeholder":
+            # simulate output — for debug only
+            print(f"[SIM] Motor set to {level}")
+            return
 
-def play_sound():
-    """Play completion sound with Pi-specific handling"""
-    if not use_sound:
-        return
-    try:
-        if on_pi:
-            # Try multiple sound methods on Pi
-            sound_commands = [
-                'aplay /usr/share/sounds/alsa/Front_Center.wav 2>/dev/null &',
-                'aplay /usr/share/sounds/alsa/Front_Left.wav 2>/dev/null &',
-                'paplay /usr/share/sounds/alsa/Front_Center.wav 2>/dev/null &',
-                'echo -e "\a"'  # Terminal bell as fallback
-            ]
-            
-            for cmd in sound_commands:
-                try:
-                    subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    print("🔊 Pi sound played")
-                    break
-                except:
-                    continue
-        else:
+        if self.mode == "vesc_serial":
+            # Example skeleton: send packet to VESC via serial
+            # TODO: implement proper vesc protocol (pyvesc or custom)
             try:
-                import winsound
-                winsound.Beep(1000, 500)
-                print("🔊 PC sound played")
-            except ImportError:
-                print("🔇 Sound not available")
-    except Exception as e:
-        print(f"🔇 Sound playback failed: {e}")
-
-
-def log_session(level, duration_seconds):
-    """Log session to file with better error handling"""
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"{timestamp} | Level: {level} | Duration: {duration_seconds} seconds\n"
-        
-        log_file_path = "session_log.txt"
-        with open(log_file_path, "a", encoding="utf-8") as log_file:
-            log_file.write(log_entry)
-        print(f"📝 Session logged: {log_entry.strip()}")
-    except Exception as e:
-        print(f"⚠️ Logging failed: {e}")
-
-
-def select_level(level):
-    """Open level selection window with Pi-responsive design"""
-    try:
-        # Window sizing for Pi
-        if on_pi and screen_width <= 800:
-            time_window = tk.Toplevel(root)
-            time_window.title(f"{level} Timer")
-            time_window.geometry("350x250")
-        else:
-            time_window = tk.Toplevel(root)
-            time_window.title(f"{level} Resistance Duration")
-            time_window.geometry("400x300")
-        
-        time_window.configure(bg="black")
-        time_window.transient(root)
-        time_window.grab_set()
-        
-        # Center the window
-        time_window.update_idletasks()
-        ww = time_window.winfo_width()
-        wh = time_window.winfo_height()
-        wx = (time_window.winfo_screenwidth() // 2) - (ww // 2)
-        wy = (time_window.winfo_screenheight() // 2) - (wh // 2)
-        time_window.geometry(f"+{wx}+{wy}")
-
-        tk.Label(time_window, text=f"Set duration for {level} resistance:", 
-                fg="white", bg="black", font=label_font).pack(pady=15 if on_pi else 20)
-
-        time_options = {"5 seconds": 5, "10 seconds": 10, "12 seconds": 12, "15 seconds": 15}
-        
-        selected_label = tk.StringVar(time_window)
-        selected_label.set(list(time_options.keys())[0])
-
-        option_menu = tk.OptionMenu(time_window, selected_label, *time_options.keys())
-        option_menu.config(bg="black", fg="white", font=button_font)
-        option_menu.config(highlightbackground="black", highlightthickness=1)
-        option_menu.pack(pady=10)
-
-        countdown_label = tk.Label(time_window, text="", fg="#00BFFF", bg="black", 
-                                  font=small_font)
-        countdown_label.pack(pady=10)
-
-        def confirm_time():
-            try:
-                label_text = selected_label.get()
-                duration = time_options[label_text]
-                countdown_label.config(text=f"{level} resistance engaged for {label_text}")
-
-                global stop_countdown, active_threads
-                with thread_lock:
-                    stop_countdown = False
-                
-                # Create and start thread
-                thread = threading.Thread(
-                    target=start_countdown, 
-                    args=(duration, countdown_label, level), 
-                    daemon=True
-                )
-                
-                with thread_lock:
-                    active_threads.append(thread)
-                
-                thread.start()
-                print(f"🚀 Started {level} thread")
-                
-                # Disable button temporarily
-                confirm_btn.config(state="disabled")
-                # Re-enable after duration + buffer
-                root.after(duration * 1000 + 2000, lambda: confirm_btn.config(state="normal") if confirm_btn.winfo_exists() else None)
-                
+                # Example: self._send_serial(f"SET_LEVEL {level}\n".encode())
+                pass
             except Exception as e:
-                print(f"⚠️ Confirm time error: {e}")
-                safe_gui_update(countdown_label, text=f"❌ Error: {str(e)}")
+                print("⚠️ Serial write failed:", e)
+            return
 
-        confirm_btn = tk.Button(time_window, text="Start", command=confirm_time, 
-                               bg="#45FFFF", fg="black", font=button_font)
-        confirm_btn.pack(pady=10)
-        
-        cancel_btn = tk.Button(time_window, text="Cancel", command=time_window.destroy,
-                              bg="#FF6B6B", fg="white", font=button_font)
-        cancel_btn.pack(pady=5)
-        
-    except Exception as e:
-        print(f"⚠️ Select level error: {e}")
-        messagebox.showerror("Error", f"Failed to open level selection: {str(e)}")
+        # Add other modes/hardware as needed
 
+    def _hw_set_off(self):
+        if self.mode == "placeholder":
+            print("[SIM] Motor OFF")
+            return
+        if self.mode == "vesc_serial":
+            try:
+                # TODO: send stop command
+                pass
+            except Exception as e:
+                print("⚠️ Serial stop failed:", e)
 
-def view_session_history():
-    """View session history window with Pi-responsive design"""
-    try:
-        # Window sizing for Pi
-        if on_pi and screen_width <= 800:
-            history_window = tk.Toplevel(root)
-            history_window.title("Session History")
-            history_window.geometry("500x400")
+    # If using serial - a helper (not implemented fully)
+    def _send_serial(self, data_bytes):
+        # Example: open serial port and write (you may want persistent open)
+        # import serial
+        # with serial.Serial(self.serial_port, self.serial_baud, timeout=0.5) as ser:
+        #     ser.write(data_bytes)
+        raise NotImplementedError("Serial sending is not implemented; fill _send_serial with your protocol.")
+
+# --------- GUI class (tkinter) ----------
+class HydroHaloGUI:
+    def __init__(self, root, settings):
+        self.root = root
+        self.settings = settings
+        self.motor = MotorController(settings)
+        self._countdown_job = None
+        self._countdown_remaining = 0
+
+        # build UI
+        self._setup_root()
+        self._build_widgets()
+
+    def _setup_root(self):
+        self.root.title("HydroHalo")
+        self.root.configure(bg="black")
+        # scaling fix for Pi
+        try:
+            if ON_PI:
+                self.root.tk.call('tk', 'scaling', 1.0)
+        except Exception:
+            pass
+        # ensure working dir
+        self.root.geometry("800x480")
+        self.root.minsize(600, 360)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_widgets(self):
+        # Logo (optional)
+        if Image and os.path.exists(os.path.join(SCRIPT_DIR, "hydrohalo_logo.png")):
+            try:
+                img = Image.open(os.path.join(SCRIPT_DIR, "hydrohalo_logo.png"))
+                img = img.resize((140, 140))
+                photo = ImageTk.PhotoImage(img)
+                lbl = tk.Label(self.root, image=photo, bg="black")
+                lbl.image = photo
+                lbl.pack(pady=6)
+            except Exception as e:
+                print("⚠️ Logo load:", e)
         else:
-            history_window = tk.Toplevel(root)
-            history_window.title("Session History")
-            history_window.geometry("600x500")
-        
-        history_window.configure(bg="black")
+            tk.Label(self.root, text="HYDROHALO", fg="#45FFFF", bg="black",
+                     font=("Helvetica", 28, "bold")).pack(pady=8)
 
-        tk.Label(history_window, text="HydroHalo Session Log", fg="#45FFFF", bg="black", 
-                font=label_font).pack(pady=10)
-        
-        frame = tk.Frame(history_window, bg="black")
-        frame.pack(expand=True, fill="both", padx=10, pady=10)
-        
+        tk.Label(self.root, text="Select Resistance Level:", fg="white", bg="black",
+                 font=("Helvetica", 16)).pack(pady=8)
+
+        self.level_frame = tk.Frame(self.root, bg="black")
+        self.level_frame.pack(pady=6)
+
+        self.levels = ["Low", "Medium", "High", "Custom"]
+        for i, lvl in enumerate(self.levels):
+            b = tk.Button(self.level_frame, text=lvl, width=12, height=2,
+                          command=lambda l=lvl: self.open_duration_dialog(l),
+                          bg="#45FFFF", fg="black", font=("Helvetica", 12, "bold"))
+            b.grid(row=i//2, column=i%2, padx=8, pady=8)
+
+        # Controls
+        self.status_var = tk.StringVar()
+        platform_info = "Raspberry Pi" if ON_PI else "PC/Mac"
+        self.status_var.set(f"{platform_info} | GPIO: {'Enabled' if self.settings.get('use_gpio') else 'Disabled'}")
+        status_bar = tk.Label(self.root, textvariable=self.status_var, fg="gray", bg="black",
+                              font=("Helvetica", 10), anchor="w")
+        status_bar.pack(side="bottom", fill="x", padx=6, pady=4)
+
+        self.extra_frame = tk.Frame(self.root, bg="black")
+        self.extra_frame.pack(pady=8)
+
+        tk.Button(self.extra_frame, text="View Session History", command=self.open_history,
+                  width=18, bg="#AAAAFF", fg="black").grid(row=0, column=0, padx=5)
+        tk.Button(self.extra_frame, text="Settings", command=self.open_settings,
+                  width=12, bg="#FFD700", fg="black").grid(row=0, column=1, padx=5)
+
+    # ---------- Dialogs ----------
+    def open_duration_dialog(self, level):
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"{level} duration")
+        dlg.configure(bg="black")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=f"Set duration for {level}:", fg="white", bg="black",
+                 font=("Helvetica", 12)).pack(pady=8)
+        # Options
+        options = [5, 10, 12, 15]
+        var = tk.IntVar(value=self.settings.get("default_duration", 10))
+        menu = tk.OptionMenu(dlg, var, *options)
+        menu.config(bg="black", fg="white")
+        menu.pack(pady=6)
+
+        countdown_label = tk.Label(dlg, text="", fg="#00BFFF", bg="black", font=("Helvetica", 12))
+        countdown_label.pack(pady=8)
+
+        def on_start():
+            duration = int(var.get())
+            countdown_label.config(text=f"{level} engaged for {duration}s")
+            # start motor & countdown
+            self.start_resistance_cycle(level, duration, countdown_label, confirm_btn)
+            confirm_btn.config(state="disabled")
+            dlg.after(duration*1000 + 2000, lambda: (confirm_btn.config(state="normal") if confirm_btn.winfo_exists() else None, dlg.destroy()))
+        confirm_btn = tk.Button(dlg, text="Start", command=on_start, bg="#45FFFF", fg="black")
+        confirm_btn.pack(pady=6)
+        tk.Button(dlg, text="Cancel", command=dlg.destroy, bg="#FF6B6B", fg="white").pack(pady=4)
+
+    def open_history(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Session History")
+        dlg.configure(bg="black")
+        dlg.geometry("600x400")
+
+        label = tk.Label(dlg, text="HydroHalo Session Log", fg="#45FFFF", bg="black", font=("Helvetica", 14))
+        label.pack(pady=8)
+
+        frame = tk.Frame(dlg, bg="black")
+        frame.pack(expand=True, fill="both", padx=10, pady=6)
         scrollbar = tk.Scrollbar(frame)
         scrollbar.pack(side="right", fill="y")
-        
-        text_area = tk.Text(frame, wrap="word", bg="black", fg="white", 
-                           font=small_font, yscrollcommand=scrollbar.set)
-        text_area.pack(expand=True, fill="both")
-        scrollbar.config(command=text_area.yview)
+        text = tk.Text(frame, bg="black", fg="white", wrap="word", yscrollcommand=scrollbar.set)
+        text.pack(expand=True, fill="both")
+        scrollbar.config(command=text.yview)
 
         try:
-            with open("session_log.txt", "r", encoding="utf-8") as log_file:
-                content = log_file.read()
-                if content.strip():
-                    text_area.insert("1.0", content)
-                else:
-                    text_area.insert("1.0", "No sessions recorded yet.")
-        except FileNotFoundError:
-            text_area.insert("1.0", "No session history found.")
+            if os.path.exists(LOG_PATH):
+                with open(LOG_PATH, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    text.insert("1.0", content if content.strip() else "No sessions recorded yet.")
+            else:
+                text.insert("1.0", "No sessions recorded yet.")
         except Exception as e:
-            text_area.insert("1.0", f"Error reading log file: {str(e)}")
-        
-        text_area.config(state="disabled")
-        
+            text.insert("1.0", f"Error reading log: {e}")
+        text.config(state="disabled")
+
         def clear_log():
+            if messagebox.askyesno("Clear Log", "Clear all session history?"):
+                try:
+                    with open(LOG_PATH, "w", encoding="utf-8") as f:
+                        f.write("")
+                    text.config(state="normal")
+                    text.delete("1.0", tk.END)
+                    text.insert("1.0", "Log cleared.")
+                    text.config(state="disabled")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to clear log: {e}")
+        tk.Button(dlg, text="Clear Log", command=clear_log, bg="#FF6B6B", fg="white").pack(pady=6)
+
+    def open_settings(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Settings")
+        dlg.configure(bg="black")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="HydroHalo Settings", fg="#45FFFF", bg="black", font=("Helvetica", 14)).pack(pady=8)
+
+        gpio_var = tk.BooleanVar(value=self.settings.get("use_gpio", False))
+        sound_var = tk.BooleanVar(value=self.settings.get("use_sound", True))
+        motor_mode_var = tk.StringVar(value=self.settings.get("motor_mode", "placeholder"))
+        tk.Checkbutton(dlg, text="Enable GPIO (Raspberry Pi)", variable=gpio_var, bg="black", fg="white").pack(pady=4)
+        tk.Checkbutton(dlg, text="Enable Sound Alerts", variable=sound_var, bg="black", fg="white").pack(pady=4)
+        tk.Label(dlg, text="Motor Mode:", fg="white", bg="black").pack(pady=4)
+        tk.OptionMenu(dlg, motor_mode_var, "placeholder", "vesc_serial").pack(pady=2)
+
+        def save():
+            self.settings["use_gpio"] = bool(gpio_var.get())
+            self.settings["use_sound"] = bool(sound_var.get())
+            self.settings["motor_mode"] = motor_mode_var.get()
+            save_settings(self.settings)
+            messagebox.showinfo("Settings", "Settings saved")
+            # reconfigure motor if mode changed
+            self.motor.mode = self.settings.get("motor_mode", "placeholder")
+            dlg.destroy()
+        tk.Button(dlg, text="Save", command=save, bg="#45FFFF", fg="black").pack(pady=6)
+        tk.Button(dlg, text="Cancel", command=dlg.destroy, bg="#FF6B6B", fg="white").pack(pady=4)
+
+    # ---------- Resistance cycle ----------
+    def start_resistance_cycle(self, level, duration_seconds, status_label, control_button):
+        """
+        Starts motor and countdown. Non-blocking.
+        - level: "Low"/"Medium"/"High"/"Custom"
+        - duration_seconds: int
+        - status_label: Label to show remaining time
+        - control_button: will be disabled until done
+        """
+        # Safety: stop any running cycle first
+        self.stop_resistance_cycle()  # ensures single cycle at a time
+
+        # start motor (background thread inside MotorController)
+        self.motor.start(level)
+        log_session(level, duration_seconds)
+
+        # prepare countdown state
+        self._countdown_remaining = duration_seconds
+        status_label.config(text=f"Time remaining: {self._format_time(self._countdown_remaining)}")
+        control_button_ref = control_button  # keep ref for closure
+
+        def tick():
+            # each second update
+            if self._countdown_remaining <= 0:
+                status_label.config(text="✅ Resistance cycle complete!")
+                self.motor.stop()
+                # optional sound
+                self._play_sound()
+                # re-enable control button if still present
+                if control_button_ref and control_button_ref.winfo_exists():
+                    control_button_ref.config(state="normal")
+                return
+            self._countdown_remaining -= 1
+            status_label.config(text=f"Time remaining: {self._format_time(self._countdown_remaining)}")
+            # schedule next tick in 1 second
+            self._countdown_job = self.root.after(1000, tick)
+
+        # start ticking immediately (1s resolution)
+        self._countdown_job = self.root.after(1000, tick)
+
+    def stop_resistance_cycle(self):
+        # cancel countdown job
+        if self._countdown_job:
             try:
-                if messagebox.askyesno("Clear Log", "Clear all session history?"):
-                    with open("session_log.txt", "w") as log_file:
-                        log_file.write("")
-                    text_area.config(state="normal")
-                    text_area.delete("1.0", tk.END)
-                    text_area.insert("1.0", "Log cleared.")
-                    text_area.config(state="disabled")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to clear log: {str(e)}")
-        
-        tk.Button(history_window, text="Clear Log", command=clear_log,
-                 bg="#FF6B6B", fg="white", font=button_font).pack(pady=5)
-        
-    except Exception as e:
-        print(f"⚠️ History viewer error: {e}")
-        messagebox.showerror("Error", f"Failed to open history: {str(e)}")
+                self.root.after_cancel(self._countdown_job)
+            except Exception:
+                pass
+            self._countdown_job = None
+        # stop motor
+        self.motor.stop()
 
+    @staticmethod
+    def _format_time(seconds):
+        m, s = divmod(max(0, int(seconds)), 60)
+        return f"{m:02d}:{s:02d}"
 
-def open_settings():
-    """Open settings window with Pi-responsive design"""
+    # ---------- Audio ----------
+    def _play_sound(self):
+        if not self.settings.get("use_sound", True):
+            return
+        try:
+            if ON_PI:
+                # try aplay
+                os.system("aplay /usr/share/sounds/alsa/Front_Center.wav >/dev/null 2>&1 &")
+            else:
+                # simple beep on desktop (may not work on all OS)
+                if sys.platform.startswith("win"):
+                    import winsound
+                    winsound.Beep(1000, 400)
+                else:
+                    print("\a", end="", flush=True)
+        except Exception as e:
+            print("🔇 Sound failed:", e)
+
+    # ---------- Shutdown ----------
+    def _on_close(self):
+        # Stop everything then destroy
+        try:
+            self.stop_resistance_cycle()
+        except Exception:
+            pass
+        try:
+            # short wait to let motor thread stop gracefully
+            time.sleep(0.05)
+        except Exception:
+            pass
+        self.root.destroy()
+
+# --------- Main entrypoint ----------
+def main():
+    settings = load_settings()
+    # show warning if on Pi but GPIO disabled
+    if ON_PI and not settings.get("use_gpio", False):
+        print("ℹ️ Running on Pi with GPIO disabled in settings (safe default).")
+
+    root = tk.Tk()
+    app = HydroHaloGUI(root, settings)
     try:
-        settings_window = tk.Toplevel(root)
-        settings_window.title("Settings")
-        settings_window.geometry("400x300")
-        settings_window.configure(bg="black")
-        settings_window.transient(root)
-        settings_window.grab_set()
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("Interrupted")
+    except Exception:
+        traceback.print_exc()
+    finally:
+        # ensure motor stopped on exit
+        try:
+            app.motor.stop()
+        except Exception:
+            pass
+        print("Shutdown complete")
 
-        tk.Label(settings_window, text="HydroHalo Settings", fg="#45FFFF", bg="black", 
-                font=label_font).pack(pady=10)
-
-        global use_gpio, use_sound
-        
-        gpio_var = tk.BooleanVar(value=use_gpio)
-        sound_var = tk.BooleanVar(value=use_sound)
-
-        tk.Checkbutton(settings_window, text="Enable GPIO (Raspberry Pi)", variable=gpio_var, 
-                      bg="black", fg="white", font=button_font,
-                      selectcolor="black").pack(pady=5)
-        tk.Checkbutton(settings_window, text="Enable Sound Alerts", variable=sound_var, 
-                      bg="black", fg="white", font=button_font,
-                      selectcolor="black").pack(pady=5)
-
-        def save_settings():
-            global use_gpio, use_sound
-            use_gpio = gpio_var.get()
-            use_sound = sound_var.get()
-            print(f"⚙️ Settings updated: GPIO={use_gpio}, Sound={use_sound}")
-            
-            success_label = tk.Label(settings_window, text="✅ Settings saved", 
-                                   fg="#00FF00", bg="black", font=small_font)
-            success_label.pack(pady=10)
-            
-            settings_window.after(2000, settings_window.destroy)
-
-        tk.Button(settings_window, text="Save", command=save_settings, 
-                 bg="#45FFFF", fg="black", font=button_font).pack(pady=10)
-        
-        tk.Button(settings_window, text="Cancel", command=settings_window.destroy,
-                 bg="#FF6B6B", fg="white", font=button_font).pack(pady=5)
-        
-    except Exception as e:
-        print(f"⚠️ Settings error: {e}")
-        messagebox.showerror("Error", f"Failed to open settings: {str(e)}")
-
-
-# Resistance Buttons with Pi-responsive sizing
-levels = ["Low", "Medium", "High", "Custom"]
-button_frame = tk.Frame(root, bg="black")
-button_frame.pack(pady=15 if on_pi else 20)
-
-# Calculate button sizes based on screen
-if on_pi and screen_width <= 800:
-    btn_width = 10
-    btn_height = 2
-    btn_padx = 8
-    btn_pady = 8
-else:
-    btn_width = 15
-    btn_height = 2
-    btn_padx = 10
-    btn_pady = 5
-
-for i, lvl in enumerate(levels):
-    btn = tk.Button(button_frame, text=lvl, command=lambda l=lvl: select_level(l), 
-                   width=btn_width, height=btn_height, bg="#45FFFF", fg="black", 
-                   font=button_font)
-    btn.grid(row=i//2, column=i%2, padx=btn_padx, pady=btn_pady)
-
-
-# Extra Buttons with Pi sizing
-extra_frame = tk.Frame(root, bg="black")
-extra_frame.pack(pady=10)
-
-if on_pi and screen_width <= 800:
-    extra_btn_width = 18
-    extra_btn_padx = 5
-else:
-    extra_btn_width = 20
-    extra_btn_padx = 5
-
-tk.Button(extra_frame, text="View Session History", command=view_session_history, 
-         width=extra_btn_width, height=2, bg="#AAAAFF", fg="black", 
-         font=button_font).grid(row=0, column=0, padx=extra_btn_padx, pady=5)
-
-tk.Button(extra_frame, text="Settings", command=open_settings, 
-         width=extra_btn_width, height=2, bg="#FFD700", fg="black", 
-         font=button_font).grid(row=0, column=1, padx=extra_btn_padx, pady=5)
-
-
-# Status bar with Pi info
-status_var = tk.StringVar()
-platform_info = f"{'Raspberry Pi' if on_pi else 'PC/Mac'}"
-if on_pi:
-    platform_info += f" ({screen_width}x{screen_height})"
-status_var.set(f"Platform: {platform_info} | GPIO: {'Enabled' if use_gpio else 'Disabled'}")
-status_bar = tk.Label(root, textvariable=status_var, fg="gray", bg="black", 
-                     font=small_font, anchor="w")
-status_bar.pack(side="bottom", fill="x", padx=5, pady=2)
-
-
-# Run loop
-print("🚀 HydroHalo GUI starting...")
-try:
-    root.mainloop()
-except KeyboardInterrupt:
-    print("\n⚠️ Keyboard interrupt received")
-except Exception as e:
-    print(f"💥 Fatal error: {e}")
-    traceback.print_exc()
-finally:
-    cleanup_on_exit()
-    print("👋 HydroHalo GUI shutdown complete")
-
-
-# End
+if __name__ == "__main__":
+    main()
