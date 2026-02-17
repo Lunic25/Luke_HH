@@ -48,3 +48,6 @@ class CRCCCITT:
             crc = self._reflect16(crc)
         return (crc ^ self.xorout) & 0xFFFF
 EOF
+
+
+python -c "from PyCRC.CRCCCITT import CRCCCITT; print('CRCCCITT OK')"
