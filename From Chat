@@ -1,0 +1,50 @@
+mkdir -p PyCRC
+
+cat > PyCRC/__init__.py << 'EOF'
+# Local shim for pyvesc dependency on PyCRC
+EOF
+
+cat > PyCRC/CRCCCITT.py << 'EOF'
+class CRCCCITT:
+    """
+    Minimal CRC-CCITT implementation to satisfy pyvesc's legacy import:
+      from PyCRC.CRCCCITT import CRCCCITT
+    """
+    def __init__(self, poly=0x1021, init=0x0000, xorout=0x0000, refin=False, refout=False):
+        self.poly = poly
+        self.init = init
+        self.xorout = xorout
+        self.refin = refin
+        self.refout = refout
+
+    @staticmethod
+    def _reflect8(x):
+        r = 0
+        for i in range(8):
+            if x & (1 << i):
+                r |= 1 << (7 - i)
+        return r
+
+    @staticmethod
+    def _reflect16(x):
+        r = 0
+        for i in range(16):
+            if x & (1 << i):
+                r |= 1 << (15 - i)
+        return r
+
+    def calculate(self, data: bytes) -> int:
+        crc = self.init & 0xFFFF
+        for b in data:
+            if self.refin:
+                b = self._reflect8(b)
+            crc ^= (b << 8) & 0xFFFF
+            for _ in range(8):
+                if crc & 0x8000:
+                    crc = ((crc << 1) ^ self.poly) & 0xFFFF
+                else:
+                    crc = (crc << 1) & 0xFFFF
+        if self.refout:
+            crc = self._reflect16(crc)
+        return (crc ^ self.xorout) & 0xFFFF
+EOF
